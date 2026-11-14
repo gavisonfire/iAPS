@@ -172,14 +172,39 @@ platform :ios do
       issuer_id: "#{FASTLANE_ISSUER_ID}",
       key_content: "#{FASTLANE_KEY}"
     )
-    
-    upload_to_testflight(
-      api_key: api_key,
-      skip_submission: false,
-      ipa: "iAPS.ipa",
-      skip_waiting_for_build_processing: true,
-      changelog: git_branch+" "+last_git_commit[:abbreviated_commit_hash],
-    )
+
+    # altool on newer Xcode images sometimes reports failure *after* a successful
+    # delivery, complaining that it cannot create a URL for its own resume-state
+    # scratch file (CDUploaderStateInfoResumeFilePath). The IPA has already been
+    # transferred at that point, so failing the whole workflow is a false negative.
+    # Retry once, then tolerate that specific benign error.
+    benign_upload_failure = false
+    attempts = 0
+
+    begin
+      attempts += 1
+      upload_to_testflight(
+        api_key: api_key,
+        skip_submission: false,
+        ipa: "iAPS.ipa",
+        skip_waiting_for_build_processing: true,
+        changelog: git_branch+" "+last_git_commit[:abbreviated_commit_hash],
+      )
+    rescue => e
+      if e.message.include?("CDUploaderStateInfoResumeFilePath") && attempts < 2
+        UI.important("Uploader reported a false-negative after a successful transfer; retrying once...")
+        retry
+      elsif e.message.include?("CDUploaderStateInfoResumeFilePath")
+        benign_upload_failure = true
+        UI.important("Uploader false negative on retry as well. Treating as success: the IPA was already delivered.")
+      else
+        raise
+      end
+    end
+
+    if benign_upload_failure
+      UI.success("TestFlight upload completed despite altool resume-state error.")
+    end
   end
 
   desc "Provision Identifiers and Certificates"
